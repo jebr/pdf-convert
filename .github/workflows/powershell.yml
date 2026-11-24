@@ -1,0 +1,84 @@
+name: PowerShell
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PESTER_VERSION: "5.7.1"
+  PSSA_VERSION: "1.23.0"
+
+jobs:
+  analyze:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Installeer PSScriptAnalyzer
+        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -Scope CurrentUser -Force
+      - name: Analyseer script en tests
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION
+          $results = @(Invoke-ScriptAnalyzer -Path ./ConvertPdf.ps1 -Settings ./PSScriptAnalyzerSettings.psd1)
+          # In Pester-tests worden variabelen in BeforeEach gezet en in It gebruikt
+          $results += @(Invoke-ScriptAnalyzer -Path ./tests/ConvertPdf.Tests.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -ExcludeRule PSUseDeclaredVarsMoreThanAssignments)
+          $results | Format-Table -AutoSize -Wrap | Out-String -Width 200 | Write-Host
+          if ($results.Count -gt 0) { throw "PSScriptAnalyzer vond $($results.Count) probleem/problemen." }
+
+  test:
+    name: Pester (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows PowerShell 5.1
+            os: windows-latest
+            shell: powershell
+          - name: PowerShell 7 op Windows
+            os: windows-latest
+            shell: pwsh
+          - name: PowerShell 7 op Linux
+            os: ubuntu-latest
+            shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Installeer Ghostscript (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript
+      - name: Installeer Ghostscript (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ghostscript -y --no-progress
+      - name: Installeer Pester
+        run: |
+          $PSVersionTable.PSVersion
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Pester
+        run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
