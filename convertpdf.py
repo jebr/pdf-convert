@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Zet alle PDF's in een map opnieuw om via Ghostscript (pdfwrite).
+"""Zet PDF's opnieuw om via Ghostscript (pdfwrite).
+
+Je kunt losse bestanden en mappen door elkaar opgeven. Van een map worden
+alle PDF's direct in die map verwerkt (geen submappen).
 
 Per bestand:
   1. Ghostscript schrijft naar een tijdelijk bestand in dezelfde map.
@@ -19,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ORIGINAL_PREFIX = "original_"
@@ -123,36 +127,102 @@ def convert_file(gs: str, pdf: Path, timeout: int = DEFAULT_TIMEOUT) -> Path:
     return original
 
 
-def convert_folder(folder: Path, gs: str, timeout: int = DEFAULT_TIMEOUT) -> int:
-    """Verwerk alle PDF's in de map. Geeft het aantal mislukte bestanden terug."""
-    pdfs = find_pdfs(folder)
-    if not pdfs:
+@dataclass
+class Targets:
+    """Resultaat van het verzamelen van te verwerken bestanden."""
+
+    pdfs: list[Path] = field(default_factory=list)
+    skipped: int = 0
+    missing: int = 0
+
+
+def skip_reason(path: Path) -> str | None:
+    """Reden om een los opgegeven bestand over te slaan, of None."""
+    if path.is_symlink():
+        return "is een symlink"
+    if path.suffix.lower() != ".pdf":
+        return "is geen PDF"
+    if path.name.startswith(ORIGINAL_PREFIX):
+        return "is al een origineel"
+    return None
+
+
+def collect_targets(paths: Sequence[Path]) -> Targets:
+    """Verzamel de PDF's uit een mix van bestanden en mappen.
+
+    Volgorde blijft zoals opgegeven; een bestand dat via meerdere paden
+    wordt genoemd, wordt maar een keer verwerkt.
+    """
+    targets = Targets()
+    seen: set[Path] = set()
+
+    def add(pdf: Path) -> None:
+        key = pdf.resolve()
+        if key not in seen:
+            seen.add(key)
+            targets.pdfs.append(pdf)
+
+    for raw in paths:
+        path = raw.expanduser()
+        if path.is_dir() and not path.is_symlink():
+            for pdf in find_pdfs(path):
+                add(pdf)
+        elif path.is_file() or path.is_symlink():
+            reason = skip_reason(path)
+            if reason:
+                targets.skipped += 1
+                print(f"Overgeslagen: '{path}' {reason}.")
+            else:
+                add(path)
+        else:
+            targets.missing += 1
+            print(f"Fout: '{path}' bestaat niet.", file=sys.stderr)
+    return targets
+
+
+def convert_paths(paths: Sequence[Path], gs: str, timeout: int = DEFAULT_TIMEOUT) -> int:
+    """Verwerk bestanden en mappen. Geeft het aantal fouten terug.
+
+    Mislukte bestanden en niet-bestaande paden tellen als fout,
+    overgeslagen bestanden niet.
+    """
+    targets = collect_targets(paths)
+    if not targets.pdfs:
         print("Geen nieuwe PDF's gevonden om om te zetten.")
-        return 0
+        return targets.missing
 
     failed = 0
-    for pdf in pdfs:
-        print(f"Omzetten: {pdf.name}")
+    for pdf in targets.pdfs:
+        print(f"Omzetten: {pdf}")
         try:
             original = convert_file(gs, pdf, timeout=timeout)
         except ConvertError as exc:
             failed += 1
-            print(f"Mislukt bij '{pdf.name}': {exc} Origineel is niet aangepast.", file=sys.stderr)
+            print(f"Mislukt bij '{pdf}': {exc} Origineel is niet aangepast.", file=sys.stderr)
             continue
         print(f"Klaar: '{original.name}' (origineel) en '{pdf.name}' (nieuw).")
 
-    done = len(pdfs) - failed
-    print(f"Afgerond: {done} omgezet, {failed} mislukt.")
-    return failed
+    done = len(targets.pdfs) - failed
+    print(
+        f"Afgerond: {done} omgezet, {failed + targets.missing} mislukt, "
+        f"{targets.skipped} overgeslagen."
+    )
+    return failed + targets.missing
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="convertpdf.py",
-        description="Zet alle PDF's in een map opnieuw om met Ghostscript. "
-        "Originelen blijven bewaard als original_<naam>.",
+        description="Zet PDF's opnieuw om met Ghostscript. Geef losse bestanden en/of "
+        "mappen op. Originelen blijven bewaard als original_<naam>.",
     )
-    parser.add_argument("folder", type=Path, help="map met PDF-bestanden")
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        type=Path,
+        metavar="pad",
+        help="PDF-bestand of map met PDF-bestanden (meerdere mogelijk)",
+    )
     parser.add_argument(
         "--timeout",
         type=int,
@@ -167,11 +237,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    folder: Path = args.folder.expanduser().resolve()
-
-    if not folder.is_dir():
-        print(f"Fout: '{folder}' is geen bestaande map.", file=sys.stderr)
-        return 1
 
     gs = find_ghostscript()
     if gs is None:
@@ -179,7 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        failed = convert_folder(folder, gs, timeout=args.timeout)
+        failed = convert_paths(args.paths, gs, timeout=args.timeout)
     except KeyboardInterrupt:
         print("\nAfgebroken door gebruiker.", file=sys.stderr)
         return 130

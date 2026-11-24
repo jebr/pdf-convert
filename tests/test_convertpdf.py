@@ -207,42 +207,122 @@ def test_convert_file_dash_name_relative_cwd(
     assert pdf.read_bytes().startswith(b"CONVERTED")
 
 
-# --- convert_folder / main ---------------------------------------------------
+# --- collect_targets / convert_paths / main -----------------------------------
 
 
-def test_convert_folder_counts_failures(
+def test_collect_targets_mix_of_files_and_folders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    map1 = tmp_path / "map1"
+    map2 = tmp_path / "map2"
+    map1.mkdir()
+    map2.mkdir()
+    (map1 / "a.pdf").write_bytes(MINIMAL_PDF)
+    (map1 / "b.pdf").write_bytes(MINIMAL_PDF)
+    (map2 / "c.pdf").write_bytes(MINIMAL_PDF)
+    los = tmp_path / "los.PDF"
+    los.write_bytes(MINIMAL_PDF)
+
+    targets = convertpdf.collect_targets([los, map1, map1 / "a.pdf", map2])
+
+    assert [p.name for p in targets.pdfs] == ["los.PDF", "a.pdf", "b.pdf", "c.pdf"]
+    assert targets.skipped == 0
+    assert targets.missing == 0
+
+
+def test_collect_targets_skips_and_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    txt = tmp_path / "notities.txt"
+    txt.write_text("x")
+    orig = tmp_path / "original_x.pdf"
+    orig.write_bytes(MINIMAL_PDF)
+    real = tmp_path / "echt.pdf"
+    real.write_bytes(MINIMAL_PDF)
+    link = tmp_path / "link.pdf"
+    link.symlink_to(real)
+
+    targets = convertpdf.collect_targets([txt, orig, link, tmp_path / "weg.pdf"])
+
+    assert targets.pdfs == []
+    assert targets.skipped == 3
+    assert targets.missing == 1
+    out = capsys.readouterr()
+    assert "is geen PDF" in out.out
+    assert "is al een origineel" in out.out
+    assert "is een symlink" in out.out
+    assert "weg.pdf' bestaat niet" in out.err
+
+
+def test_convert_paths_counts_failures(
     pdf_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (pdf_dir / "a.pdf").write_bytes(MINIMAL_PDF)
     (pdf_dir / "b.pdf").write_bytes(MINIMAL_PDF)
     (pdf_dir / "original_b.pdf").write_bytes(b"older")
+    txt = tmp_path / "x.txt"
+    txt.write_text("x")
 
-    failed = convertpdf.convert_folder(pdf_dir, make_fake_gs(tmp_path))
+    failed = convertpdf.convert_paths(
+        [pdf_dir, txt, tmp_path / "bestaat-niet"], make_fake_gs(tmp_path)
+    )
 
-    assert failed == 1
+    assert failed == 2
     assert (pdf_dir / "original_a.pdf").exists()
     out = capsys.readouterr()
-    assert "1 omgezet, 1 mislukt" in out.out
+    assert "1 omgezet, 2 mislukt, 1 overgeslagen" in out.out
     assert "b.pdf" in out.err
 
 
-def test_convert_folder_empty(pdf_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert convertpdf.convert_folder(pdf_dir, "gs") == 0
+def test_convert_paths_single_file(pdf_dir: Path, tmp_path: Path) -> None:
+    (pdf_dir / "a.pdf").write_bytes(MINIMAL_PDF)
+    (pdf_dir / "b.pdf").write_bytes(MINIMAL_PDF)
+
+    assert convertpdf.convert_paths([pdf_dir / "b.pdf"], make_fake_gs(tmp_path)) == 0
+
+    assert (pdf_dir / "original_b.pdf").exists()
+    assert not (pdf_dir / "original_a.pdf").exists()
+
+
+def test_convert_paths_empty(pdf_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert convertpdf.convert_paths([pdf_dir], "gs") == 0
     assert "Geen nieuwe PDF's" in capsys.readouterr().out
+
+
+def test_convert_paths_only_missing(tmp_path: Path) -> None:
+    assert convertpdf.convert_paths([tmp_path / "weg"], "gs") == 1
 
 
 def test_second_run_is_idempotent(pdf_dir: Path, tmp_path: Path) -> None:
     (pdf_dir / "a.pdf").write_bytes(MINIMAL_PDF)
     gs = make_fake_gs(tmp_path)
-    assert convertpdf.convert_folder(pdf_dir, gs) == 0
+    assert convertpdf.convert_paths([pdf_dir], gs) == 0
     # Tweede keer: a.pdf heeft nu een original_ naast zich en wordt overgeslagen
-    assert convertpdf.convert_folder(pdf_dir, gs) == 1
+    assert convertpdf.convert_paths([pdf_dir], gs) == 1
     assert (pdf_dir / "original_a.pdf").read_bytes() == MINIMAL_PDF
 
 
-def test_main_missing_folder(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_missing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(convertpdf, "find_ghostscript", lambda: "gs")
     assert convertpdf.main([str(tmp_path / "bestaat-niet")]) == 1
-    assert "geen bestaande map" in capsys.readouterr().err
+    assert "bestaat niet" in capsys.readouterr().err
+
+
+def test_main_multiple_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    map1 = tmp_path / "map1"
+    map1.mkdir()
+    (map1 / "a.pdf").write_bytes(MINIMAL_PDF)
+    los = tmp_path / "los.pdf"
+    los.write_bytes(MINIMAL_PDF)
+    gs = make_fake_gs(tmp_path)
+    monkeypatch.setattr(convertpdf, "find_ghostscript", lambda: gs)
+
+    assert convertpdf.main([str(map1), str(los)]) == 0
+
+    assert (map1 / "original_a.pdf").exists()
+    assert (tmp_path / "original_los.pdf").exists()
 
 
 def test_main_without_ghostscript(
@@ -310,5 +390,5 @@ def test_main_keyboard_interrupt(pdf_dir: Path, monkeypatch: pytest.MonkeyPatch)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(convertpdf, "find_ghostscript", lambda: "gs")
-    monkeypatch.setattr(convertpdf, "convert_folder", interrupted)
+    monkeypatch.setattr(convertpdf, "convert_paths", interrupted)
     assert convertpdf.main([str(pdf_dir)]) == 130

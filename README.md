@@ -1,19 +1,31 @@
 # pdf-convert
 
-Zet alle PDF's in een map opnieuw om met Ghostscript (`pdfwrite`, PDF 1.7). Handig om
-afwijkende of slecht opgebouwde PDF's te normaliseren. Het origineel blijft altijd bewaard.
+Zet PDF's opnieuw om met Ghostscript (`pdfwrite`, PDF 1.7). Handig om afwijkende of slecht
+opgebouwde PDF's te normaliseren. Het origineel blijft altijd bewaard.
+
+Je kunt losse bestanden en mappen opgeven, ook meerdere en door elkaar.
 
 ## Wat het doet
 
-Voor elke `*.pdf` in de opgegeven map:
+Voor elk opgegeven PDF-bestand en elke `*.pdf` direct in een opgegeven map (geen submappen):
 
 1. Ghostscript schrijft het resultaat naar een tijdelijk bestand in dezelfde map.
 2. Het origineel wordt hernoemd naar `original_<naam>.pdf`.
 3. Het nieuwe bestand krijgt de originele naam.
 
 Mislukt de omzetting, dan blijft het origineel ongewijzigd staan en gaat het script door met
-het volgende bestand. Overgeslagen worden: submappen, symlinks, verborgen bestanden,
-bestanden die al met `original_` beginnen en PDF's waarvoor al een `original_` bestaat.
+het volgende bestand.
+
+Overgeslagen worden, met een melding bij losse bestanden:
+
+- bestanden zonder `.pdf`-extensie
+- bestanden die al met `original_` beginnen
+- symlinks
+- in mappen: submappen en verborgen bestanden
+
+Een PDF die meerdere keren genoemd wordt (los en via zijn map), wordt maar één keer verwerkt.
+Een PDF waarvoor al een `original_` bestaat, wordt niet verwerkt en telt als mislukt. Een pad
+dat niet bestaat, telt ook als mislukt; de rest wordt wel verwerkt.
 
 Er zijn twee versies met dezelfde werking. Kies er een:
 
@@ -37,13 +49,17 @@ Beide versies hebben Ghostscript nodig.
 Vereist Python 3.10 of nieuwer. Er zijn geen extra pakketten nodig.
 
 ```bash
-./convertpdf.py "/pad/naar/map"
-./convertpdf.py "/pad/naar/map" --timeout 600   # max. seconden per bestand (standaard 300)
+./convertpdf.py "/pad/naar/map"                         # alle PDF's in een map
+./convertpdf.py "/pad/naar/factuur.pdf"                 # een los bestand
+./convertpdf.py ~/Scans ~/Archief "/tmp/brief.pdf"      # mix van mappen en bestanden
+./convertpdf.py ~/Scans/*.pdf                           # jokertekens via je shell
+./convertpdf.py "/pad/naar/map" --timeout 600           # max. seconden per bestand (standaard 300)
 ./convertpdf.py --help
 ```
 
-Exit codes: `0` alles gelukt, `1` minstens één bestand mislukt of een fout vooraf,
-`2` ongeldige argumenten, `130` afgebroken met Ctrl+C.
+Exit codes: `0` alles gelukt (overgeslagen bestanden tellen niet als fout), `1` minstens één
+bestand mislukt, een pad bestaat niet of een fout vooraf, `2` ongeldige argumenten, `130`
+afgebroken met Ctrl+C.
 
 ## Gebruik met PowerShell
 
@@ -53,7 +69,8 @@ Windows, macOS en Linux. Python is niet nodig.
 ### Eenmalig instellen (Windows)
 
 1. Installeer Ghostscript (zie hierboven).
-2. Download `ConvertPdf.ps1` en zet het in een vaste map, bijvoorbeeld `C:\Tools`.
+2. Download `ConvertPdf.ps1` en zet het in een vaste map. In de voorbeelden hieronder is dat
+   `C:\Tools`; vervang dat door je eigen map, bijvoorbeeld de map waar je de repo hebt gekloond.
 3. Open PowerShell en sta lokale scripts toe voor je eigen account. Gedownloade scripts
    blijven dan geblokkeerd tot je ze zelf vrijgeeft:
 
@@ -71,32 +88,45 @@ Zet de execution policy liever niet op `Bypass` of `Unrestricted`.
 
 ### Script uitvoeren
 
-```powershell
-C:\Tools\ConvertPdf.ps1 -Path 'C:\Scans'
-```
-
-Of vanuit de map waar het script staat:
+Vanuit de map waar het script staat:
 
 ```powershell
 cd C:\Tools
-.\ConvertPdf.ps1 -Path 'C:\Scans'
+.\ConvertPdf.ps1 'C:\Scans'                                  # alle PDF's in een map
+.\ConvertPdf.ps1 'C:\Scans\factuur.pdf'                      # een los bestand
+.\ConvertPdf.ps1 'C:\Scans' 'D:\Archief' 'C:\Temp\brief.pdf'  # mix van mappen en bestanden
 ```
 
-Zet een pad met spaties tussen aanhalingstekens, bijvoorbeeld `-Path 'C:\Mijn scans'`.
+Of met het volledige pad naar het script, vanuit elke map:
+
+```powershell
+C:\Tools\ConvertPdf.ps1 'C:\Scans'
+```
+
+Zet een pad met spaties tussen aanhalingstekens, bijvoorbeeld `'C:\Mijn scans'`. Met `-Path`
+erbij scheid je meerdere paden met komma's: `-Path 'C:\Scans','C:\Temp\brief.pdf'`.
+
+PowerShell vouwt jokertekens als `*.pdf` niet vanzelf uit voor een script. Wil je een selectie
+maken, gebruik dan bijvoorbeeld:
+
+```powershell
+.\ConvertPdf.ps1 (Get-ChildItem 'C:\Scans\factuur*.pdf').FullName
+```
 
 Voorbeeld van de uitvoer:
 
 ```text
-Omzetten: factuur.pdf
+Overgeslagen: 'C:\Scans\notities.txt' is geen PDF.
+Omzetten: C:\Scans\factuur.pdf
 Klaar: 'original_factuur.pdf' (origineel) en 'factuur.pdf' (nieuw).
-Afgerond: 1 omgezet, 0 mislukt.
+Afgerond: 1 omgezet, 0 mislukt, 1 overgeslagen.
 ```
 
 ### Parameters
 
 | Parameter | Verplicht | Uitleg |
 | --- | --- | --- |
-| `-Path` | ja | Map met de PDF-bestanden. Mag ook zonder parameternaam: `.\ConvertPdf.ps1 'C:\Scans'` |
+| `-Path` | ja | Een of meer PDF-bestanden en/of mappen. Mag ook zonder parameternaam: `.\ConvertPdf.ps1 'C:\Scans' 'C:\brief.pdf'` |
 | `-TimeoutSeconds` | nee | Maximale tijd per bestand in seconden, standaard `300` |
 | `-GhostscriptPath` | nee | Volledig pad naar `gswin64c.exe`, als Ghostscript niet vanzelf gevonden wordt |
 
@@ -110,13 +140,13 @@ Get-Help C:\Tools\ConvertPdf.ps1 -Detailed
 ### Starten vanuit de opdrachtprompt of Taakplanner
 
 ```bat
-powershell.exe -NoProfile -File "C:\Tools\ConvertPdf.ps1" -Path "C:\Scans"
+powershell.exe -NoProfile -File "C:\Tools\ConvertPdf.ps1" "C:\Scans" "C:\Temp\brief.pdf"
 ```
 
 Gebruik `pwsh.exe` in plaats van `powershell.exe` als je PowerShell 7 hebt.
 
-Exit codes: `0` alles gelukt, `1` minstens één bestand mislukt of een fout vooraf, `2` geen map
-opgegeven.
+Exit codes: `0` alles gelukt (overgeslagen bestanden tellen niet als fout), `1` minstens één
+bestand mislukt, een pad bestaat niet of een fout vooraf, `2` geen pad opgegeven.
 
 ## Beveiliging
 
