@@ -1,9 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Zet alle PDF's in een map opnieuw om met Ghostscript (pdfwrite, PDF 1.7).
+    Zet PDF's opnieuw om met Ghostscript (pdfwrite, PDF 1.7).
 
 .DESCRIPTION
+    Geef losse PDF-bestanden en/of mappen op, door elkaar. Van een map worden
+    alle PDF's direct in die map verwerkt (geen submappen).
+
     Per bestand:
       1. Ghostscript schrijft naar een tijdelijk bestand in dezelfde map.
       2. Het origineel wordt hernoemd naar original_<naam>.
@@ -12,13 +15,15 @@
     Gaat stap 3 mis (of wordt het script afgebroken), dan wordt stap 2
     teruggedraaid. Het origineel blijft dus altijd bewaard.
 
-    Overgeslagen worden: submappen, symlinks, verborgen bestanden, bestanden
-    die al met original_ beginnen en PDF's waarvoor al een original_ bestaat.
+    Overgeslagen worden: bestanden zonder .pdf-extensie, bestanden die al met
+    original_ beginnen en symlinks. In mappen ook submappen en verborgen
+    bestanden. Een PDF waarvoor al een original_ bestaat, telt als mislukt.
 
     Werkt met Windows PowerShell 5.1 en PowerShell 7 (Windows, macOS, Linux).
 
 .PARAMETER Path
-    Map met PDF-bestanden.
+    Een of meer PDF-bestanden en/of mappen. Paden worden letterlijk gelezen,
+    jokertekens zoals *.pdf worden niet uitgevouwen.
 
 .PARAMETER TimeoutSeconds
     Maximale tijd per bestand in seconden (standaard 300).
@@ -30,17 +35,29 @@
 .EXAMPLE
     .\ConvertPdf.ps1 -Path 'C:\Scans'
 
+    Verwerkt alle PDF's in C:\Scans.
+
 .EXAMPLE
-    .\ConvertPdf.ps1 'C:\Scans' -TimeoutSeconds 600 -GhostscriptPath 'C:\Tools\gs\bin\gswin64c.exe'
+    .\ConvertPdf.ps1 'C:\Scans\factuur.pdf'
+
+    Verwerkt alleen factuur.pdf.
+
+.EXAMPLE
+    .\ConvertPdf.ps1 'C:\Scans' 'D:\Archief' 'C:\Temp\brief.pdf'
+
+    Verwerkt twee mappen en een los bestand.
+
+.EXAMPLE
+    .\ConvertPdf.ps1 -Path 'C:\Scans' -TimeoutSeconds 600 -GhostscriptPath 'C:\Tools\gs\bin\gswin64c.exe'
 
 .NOTES
-    Exit codes: 0 alles gelukt, 1 minstens een bestand mislukt of een fout vooraf,
-    2 geen map opgegeven.
+    Exit codes: 0 alles gelukt, 1 minstens een bestand mislukt, een pad bestaat
+    niet of een fout vooraf, 2 geen pad opgegeven.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)]
-    [string]$Path,
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$Path,
 
     [ValidateRange(1, 86400)]
     [int]$TimeoutSeconds = 300,
@@ -298,37 +315,121 @@ function Convert-PdfFile {
     return $original
 }
 
-function Convert-PdfFolder {
-    <# Verwerkt alle PDF's in de map. Geeft het aantal mislukte bestanden terug. #>
+function Get-SkipReason {
+    <# Reden om een los opgegeven bestand over te slaan, of $null. #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][System.IO.FileInfo]$Item)
+
+    if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        return 'is een symlink'
+    }
+    if ($Item.Extension -ine '.pdf') {
+        return 'is geen PDF'
+    }
+    if ($Item.Name.StartsWith('original_', [System.StringComparison]::Ordinal)) {
+        return 'is al een origineel'
+    }
+    return $null
+}
+
+function Get-ConvertTarget {
+    <#
+    Verzamelt de PDF's uit een mix van bestanden en mappen. Volgorde blijft
+    zoals opgegeven; een bestand dat meerdere keren genoemd wordt, telt een keer.
+    Geeft een object terug met Files, Skipped en Missing.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Path)
+
+    $comparer = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        [System.StringComparer]::OrdinalIgnoreCase
+    }
+    else {
+        [System.StringComparer]::Ordinal
+    }
+    $seen = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList $comparer
+    $files = New-Object -TypeName 'System.Collections.Generic.List[System.IO.FileInfo]'
+    $skipped = 0
+    $missing = 0
+
+    foreach ($p in $Path) {
+        if ([string]::IsNullOrWhiteSpace($p)) {
+            continue
+        }
+        if (Test-Path -LiteralPath $p -PathType Container) {
+            $dir = Get-Item -LiteralPath $p -Force
+            if ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                $skipped++
+                Write-Host "Overgeslagen: '$p' is een symlink."
+                continue
+            }
+            foreach ($pdf in @(Get-PdfToConvert -Folder $dir.FullName)) {
+                if ($seen.Add($pdf.FullName)) {
+                    $files.Add($pdf)
+                }
+            }
+        }
+        elseif (Test-Path -LiteralPath $p -PathType Leaf) {
+            $item = Get-Item -LiteralPath $p -Force
+            $reason = Get-SkipReason -Item $item
+            if ($reason) {
+                $skipped++
+                Write-Host "Overgeslagen: '$p' $reason."
+            }
+            elseif ($seen.Add($item.FullName)) {
+                $files.Add($item)
+            }
+        }
+        else {
+            $missing++
+            Write-ErrorLine "Fout: '$p' bestaat niet."
+        }
+    }
+
+    [pscustomobject]@{
+        Files   = $files.ToArray()
+        Skipped = $skipped
+        Missing = $missing
+    }
+}
+
+function Convert-PdfPath {
+    <#
+    Verwerkt bestanden en mappen. Geeft het aantal fouten terug: mislukte
+    bestanden plus niet-bestaande paden. Overgeslagen bestanden tellen niet mee.
+    #>
     [CmdletBinding()]
     [OutputType([int])]
     param(
         [Parameter(Mandatory)][string]$Ghostscript,
-        [Parameter(Mandatory)][string]$Folder,
+        [Parameter(Mandatory)][string[]]$Path,
         [ValidateRange(1, 86400)][int]$TimeoutSeconds = 300
     )
 
-    $pdfs = @(Get-PdfToConvert -Folder $Folder)
+    $targets = Get-ConvertTarget -Path $Path
+    $pdfs = @($targets.Files)
     if ($pdfs.Count -eq 0) {
         Write-Host "Geen nieuwe PDF's gevonden om om te zetten."
-        return 0
+        return $targets.Missing
     }
 
     $failed = 0
     foreach ($pdf in $pdfs) {
-        Write-Host "Omzetten: $($pdf.Name)"
+        Write-Host "Omzetten: $($pdf.FullName)"
         try {
             $original = Convert-PdfFile -Ghostscript $Ghostscript -File $pdf.FullName -TimeoutSeconds $TimeoutSeconds
             Write-Host "Klaar: '$([System.IO.Path]::GetFileName($original))' (origineel) en '$($pdf.Name)' (nieuw)."
         }
         catch {
             $failed++
-            Write-ErrorLine "Mislukt bij '$($pdf.Name)': $($_.Exception.Message) Origineel is niet aangepast."
+            Write-ErrorLine "Mislukt bij '$($pdf.FullName)': $($_.Exception.Message) Origineel is niet aangepast."
         }
     }
 
-    Write-Host "Afgerond: $($pdfs.Count - $failed) omgezet, $failed mislukt."
-    return $failed
+    $errors = $failed + $targets.Missing
+    Write-Host "Afgerond: $($pdfs.Count - $failed) omgezet, $errors mislukt, $($targets.Skipped) overgeslagen."
+    return $errors
 }
 
 function Invoke-ConvertPdf {
@@ -336,21 +437,16 @@ function Invoke-ConvertPdf {
     [CmdletBinding()]
     [OutputType([int])]
     param(
-        [string]$Path,
+        [string[]]$Path,
         [ValidateRange(1, 86400)][int]$TimeoutSeconds = 300,
         [string]$GhostscriptPath
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        Write-ErrorLine 'Gebruik: .\ConvertPdf.ps1 -Path "C:\pad\naar\map" [-TimeoutSeconds 300] [-GhostscriptPath <pad>]'
+    $paths = @($Path | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($paths.Count -eq 0) {
+        Write-ErrorLine 'Gebruik: .\ConvertPdf.ps1 -Path <bestand of map> [<bestand of map> ...] [-TimeoutSeconds 300] [-GhostscriptPath <pad>]'
         return 2
     }
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        Write-ErrorLine "Fout: '$Path' is geen bestaande map."
-        return 1
-    }
-    $folder = Convert-Path -LiteralPath $Path
 
     if ($GhostscriptPath) {
         if (-not (Test-Path -LiteralPath $GhostscriptPath -PathType Leaf)) {
@@ -368,8 +464,8 @@ function Invoke-ConvertPdf {
         return 1
     }
 
-    $failed = Convert-PdfFolder -Ghostscript $gs -Folder $folder -TimeoutSeconds $TimeoutSeconds
-    if ($failed -gt 0) {
+    $errors = Convert-PdfPath -Ghostscript $gs -Path $paths -TimeoutSeconds $TimeoutSeconds
+    if ($errors -gt 0) {
         return 1
     }
     return 0

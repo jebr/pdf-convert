@@ -249,40 +249,116 @@ Describe 'Convert-PdfFile' {
     }
 }
 
-Describe 'Convert-PdfFolder' {
+Describe 'Get-ConvertTarget' {
+    BeforeEach {
+        Mock Write-Host { }
+        Mock Write-ErrorLine { }
+    }
+
+    It 'combineert bestanden en mappen in opgegeven volgorde zonder dubbelen' {
+        $map1 = Initialize-TestFolder
+        $map2 = Initialize-TestFolder
+        Write-TestPdf (Join-Path $map1 'a.pdf')
+        Write-TestPdf (Join-Path $map1 'b.pdf')
+        Write-TestPdf (Join-Path $map2 'c.pdf')
+        $los = Join-Path $TestDrive 'los.PDF'
+        Write-TestPdf $los
+
+        $targets = Get-ConvertTarget -Path @($los, $map1, (Join-Path $map1 'a.pdf'), $map2)
+
+        @($targets.Files | ForEach-Object { $_.Name }) | Should -Be @('los.PDF', 'a.pdf', 'b.pdf', 'c.pdf')
+        $targets.Skipped | Should -Be 0
+        $targets.Missing | Should -Be 0
+    }
+
+    It 'slaat geen-PDF en original_ over en telt ontbrekende paden' {
+        $folder = Initialize-TestFolder
+        $txt = Join-Path $folder 'notities.txt'
+        Set-Content -LiteralPath $txt -Value 'x'
+        $orig = Join-Path $folder 'original_x.pdf'
+        Write-TestPdf $orig
+
+        $targets = Get-ConvertTarget -Path @($txt, $orig, (Join-Path $folder 'weg.pdf'))
+
+        @($targets.Files).Count | Should -Be 0
+        $targets.Skipped | Should -Be 2
+        $targets.Missing | Should -Be 1
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*notities.txt* is geen PDF.' }
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*original_x.pdf* is al een origineel.' }
+        Should -Invoke Write-ErrorLine -ParameterFilter { $Message -like "*weg.pdf' bestaat niet." }
+    }
+
+    It 'slaat een los opgegeven symlink over' {
+        $real = Join-Path $TestDrive 'echt.pdf'
+        Write-TestPdf $real
+        $link = Join-Path $TestDrive ('link-' + [guid]::NewGuid().ToString('N') + '.pdf')
+        try {
+            [void](New-Item -ItemType SymbolicLink -Path $link -Value $real -ErrorAction Stop)
+        }
+        catch {
+            Set-ItResult -Skipped -Because "symlink maken is hier niet toegestaan: $($_.Exception.Message)"
+            return
+        }
+
+        $targets = Get-ConvertTarget -Path @($link)
+
+        @($targets.Files).Count | Should -Be 0
+        $targets.Skipped | Should -Be 1
+    }
+}
+
+Describe 'Convert-PdfPath' {
     BeforeEach {
         Mock Write-Host { }
         Mock Write-ErrorLine { }
         Mock Invoke-ExternalProcess $script:FakeGhostscriptOk
     }
 
-    It 'telt mislukte bestanden en gaat door met de rest' {
+    It 'telt mislukte bestanden en ontbrekende paden en gaat door met de rest' {
         $folder = Initialize-TestFolder
         Write-TestPdf (Join-Path $folder 'a.pdf')
         Write-TestPdf (Join-Path $folder 'b.pdf')
         Set-Content -LiteralPath (Join-Path $folder 'original_b.pdf') -Value 'ouder'
+        $txt = Join-Path $TestDrive 'x.txt'
+        Set-Content -LiteralPath $txt -Value 'x'
 
-        Convert-PdfFolder -Ghostscript 'gs' -Folder $folder | Should -Be 1
+        Convert-PdfPath -Ghostscript 'gs' -Path @($folder, $txt, (Join-Path $TestDrive 'bestaat-niet')) |
+            Should -Be 2
 
         Test-Path -LiteralPath (Join-Path $folder 'original_a.pdf') | Should -BeTrue
-        Should -Invoke Write-ErrorLine -Times 1 -ParameterFilter { $Message -like "*'b.pdf'*" }
-        Should -Invoke Write-Host -ParameterFilter { $Object -eq 'Afgerond: 1 omgezet, 1 mislukt.' }
+        Should -Invoke Write-ErrorLine -ParameterFilter { $Message -like "Mislukt bij *b.pdf'*" }
+        Should -Invoke Write-Host -ParameterFilter { $Object -eq 'Afgerond: 1 omgezet, 2 mislukt, 1 overgeslagen.' }
+    }
+
+    It 'verwerkt alleen het opgegeven bestand' {
+        $folder = Initialize-TestFolder
+        Write-TestPdf (Join-Path $folder 'a.pdf')
+        Write-TestPdf (Join-Path $folder 'b.pdf')
+
+        Convert-PdfPath -Ghostscript 'gs' -Path @(Join-Path $folder 'b.pdf') | Should -Be 0
+
+        Test-Path -LiteralPath (Join-Path $folder 'original_b.pdf') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $folder 'original_a.pdf') | Should -BeFalse
     }
 
     It 'meldt een lege map' {
         $folder = Initialize-TestFolder
 
-        Convert-PdfFolder -Ghostscript 'gs' -Folder $folder | Should -Be 0
+        Convert-PdfPath -Ghostscript 'gs' -Path @($folder) | Should -Be 0
 
         Should -Invoke Write-Host -ParameterFilter { $Object -like "Geen nieuwe PDF's*" }
+    }
+
+    It 'geeft een fout als alleen een ontbrekend pad is opgegeven' {
+        Convert-PdfPath -Ghostscript 'gs' -Path @(Join-Path $TestDrive 'weg') | Should -Be 1
     }
 
     It 'verwerkt een bestand bij een tweede run niet opnieuw' {
         $folder = Initialize-TestFolder
         Write-TestPdf (Join-Path $folder 'a.pdf')
 
-        Convert-PdfFolder -Ghostscript 'gs' -Folder $folder | Should -Be 0
-        Convert-PdfFolder -Ghostscript 'gs' -Folder $folder | Should -Be 1
+        Convert-PdfPath -Ghostscript 'gs' -Path @($folder) | Should -Be 0
+        Convert-PdfPath -Ghostscript 'gs' -Path @($folder) | Should -Be 1
 
         [System.IO.File]::ReadAllBytes((Join-Path $folder 'original_a.pdf')) | Should -Be $script:MinimalPdf
     }
@@ -294,13 +370,15 @@ Describe 'Invoke-ConvertPdf' {
         Mock Write-ErrorLine { }
     }
 
-    It 'geeft 2 zonder map' {
+    It 'geeft 2 zonder pad' {
         Invoke-ConvertPdf | Should -Be 2
+        Invoke-ConvertPdf -Path @('', ' ') | Should -Be 2
     }
 
-    It 'geeft 1 bij een niet-bestaande map' {
+    It 'geeft 1 bij een niet-bestaand pad' {
+        Mock Find-Ghostscript { 'gs' }
         Invoke-ConvertPdf -Path (Join-Path $TestDrive 'bestaat-niet') | Should -Be 1
-        Should -Invoke Write-ErrorLine -ParameterFilter { $Message -like '*geen bestaande map*' }
+        Should -Invoke Write-ErrorLine -ParameterFilter { $Message -like '*bestaat niet*' }
     }
 
     It 'geeft 1 als Ghostscript ontbreekt' {
@@ -337,7 +415,7 @@ Describe 'Invoke-ConvertPdf' {
 
 Describe 'Script als programma' {
     It 'geeft exit code <Code> bij <Name>' -TestCases @(
-        @{ Name = 'een niet-bestaande map'; Code = 1; Extra = @('-Path', 'map-die-echt-niet-bestaat-123') }
+        @{ Name = 'een niet-bestaand pad'; Code = 1; Extra = @('-Path', 'map-die-echt-niet-bestaat-123') }
         @{ Name = 'geen argumenten'; Code = 2; Extra = @() }
     ) {
         $psArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script:ScriptPath) + $Extra
@@ -365,6 +443,24 @@ Describe 'Integratie met echte Ghostscript' -Skip:(-not $hasGhostscript) {
         $header = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($pdf), 0, 8)
         $header | Should -Be '%PDF-1.7'
         Get-TempFileCount $folder | Should -Be 0
+    }
+
+    It 'verwerkt een mix van bestand en map als losse argumenten van het script' {
+        $map = Initialize-TestFolder
+        Write-TestPdf (Join-Path $map 'in map.pdf')
+        $los = Join-Path (Initialize-TestFolder) 'los.pdf'
+        Write-TestPdf $los
+        $txt = Join-Path $map 'notities.txt'
+        Set-Content -LiteralPath $txt -Value 'x'
+
+        $psArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script:ScriptPath, $map, $los, $txt)
+        $ErrorActionPreference = 'Continue'
+        $null = & $script:PowerShellExe @psArgs 2>&1
+
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $map 'original_in map.pdf') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path (Split-Path $los -Parent) 'original_los.pdf') | Should -BeTrue
+        Get-Content -LiteralPath $txt -Raw | Should -Match 'x'
     }
 
     It 'laat een kapotte PDF ongemoeid' {

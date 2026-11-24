@@ -69,7 +69,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript
       - name: Installeer Ghostscript (Windows)
         if: runner.os == 'Windows'
-        run: choco install ghostscript -y --no-progress
+        # De community-server van Chocolatey is soms traag of geeft een fout: tot 3 pogingen
+        run: |
+          for ($i = 1; $i -le 3; $i++) {
+            choco install ghostscript -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "Poging $i mislukt, opnieuw over 20 s."
+            Start-Sleep -Seconds 20
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Ghostscript installeren mislukt na 3 pogingen.' }
       - name: Installeer Pester
         run: |
           $PSVersionTable.PSVersion
