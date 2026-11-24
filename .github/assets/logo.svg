@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="pdf-convert logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <!-- document met omgevouwen hoek -->
+  <path d="M38 24h36l18 18v62a6 6 0 0 1-6 6H38a6 6 0 0 1-6-6V30a6 6 0 0 1 6-6z" fill="#ffffff"/>
+  <path d="M74 24v14a4 4 0 0 0 4 4h14z" fill="#c7d2fe"/>
+  <text x="62" y="62" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#4f46e5">PDF</text>
+  <!-- ververs-pijlen -->
+  <g fill="none" stroke="#f59e0b" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M47 86a15 15 0 0 1 26-8"/>
+    <path d="M77 86a15 15 0 0 1-26 8"/>
+  </g>
+  <path d="M75 70l1 11-10-2z" fill="#f59e0b"/>
+  <path d="M49 102l-1-11 10 2z" fill="#f59e0b"/>
+</svg>
