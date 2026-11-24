@@ -32,6 +32,28 @@ bestanden die al met `original_` beginnen en PDF's waarvoor al een `original_` b
 Exit codes: `0` alles gelukt, `1` minstens één bestand mislukt of een fout vooraf,
 `2` ongeldige argumenten, `130` afgebroken met Ctrl+C.
 
+## PowerShell-versie
+
+`ConvertPdf.ps1` doet hetzelfde en werkt met Windows PowerShell 5.1 en PowerShell 7
+(Windows, macOS, Linux). Python is dan niet nodig.
+
+```powershell
+.\ConvertPdf.ps1 -Path 'C:\Scans'
+.\ConvertPdf.ps1 -Path 'C:\Scans' -TimeoutSeconds 600
+.\ConvertPdf.ps1 -Path 'C:\Scans' -GhostscriptPath 'C:\Tools\gs\bin\gswin64c.exe'
+Get-Help .\ConvertPdf.ps1 -Detailed
+```
+
+Ghostscript wordt gezocht in `PATH` en daarna in `C:\Program Files\gs\<versie>\bin`, waar de
+Windows-installer het neerzet. Met `-GhostscriptPath` geef je zelf een pad op.
+
+Exit codes: `0` alles gelukt, `1` minstens één bestand mislukt of een fout vooraf, `2` geen map
+opgegeven.
+
+**Execution policy:** Windows blokkeert gedownloade scripts. Bekijk het script en deblokkeer
+het daarna eenmalig met `Unblock-File .\ConvertPdf.ps1`. Zet de execution policy liever niet
+op `Bypass` of `Unrestricted`.
+
 ## Beveiliging
 
 - Ghostscript draait met `-dSAFER`, zodat een kwaadaardige PDF geen bestanden kan lezen of
@@ -55,5 +77,14 @@ mypy
 bandit -c pyproject.toml -r convertpdf.py
 ```
 
+PowerShell (vereist [Pester 5](https://pester.dev) en PSScriptAnalyzer):
+
+```powershell
+Invoke-Pester ./tests
+Invoke-ScriptAnalyzer -Path ./ConvertPdf.ps1 -Settings ./PSScriptAnalyzerSettings.psd1
+```
+
 CI draait lint, mypy, Bandit, pip-audit en de tests (Linux en macOS, Python 3.10 t/m 3.13,
-met echte Ghostscript). CodeQL scant wekelijks en bij elke pull request.
+met echte Ghostscript). De PowerShell-workflow draait PSScriptAnalyzer en Pester op Windows
+PowerShell 5.1, PowerShell 7 op Windows en PowerShell 7 op Linux, ook met echte Ghostscript.
+CodeQL scant wekelijks en bij elke pull request.
