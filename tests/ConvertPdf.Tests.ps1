@@ -341,6 +341,8 @@ Describe 'Script als programma' {
         @{ Name = 'geen argumenten'; Code = 2; Extra = @() }
     ) {
         $psArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script:ScriptPath) + $Extra
+        # Windows PowerShell 5.1 maakt van stderr een fout; met 'Stop' zou de test daarop afbreken
+        $ErrorActionPreference = 'Continue'
         $null = & $script:PowerShellExe @psArgs 2>&1
         $LASTEXITCODE | Should -Be $Code
     }
